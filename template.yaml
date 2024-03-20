@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: This AWS CloudFormation template sets up a PDF Data Extraction stack, designed for processing PDF documents to extract text and perform various tasks. It requires the 'utils-stack' to be previously deployed for utility functions.
+
+Resources:
+
+  PDFProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pdf-processing-queue
+      VisibilityTimeout: 300
+
+  QueuesPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "Object created queue"
+            Effect: Allow
+            Principal: "*"
+            Resource: "*"
+            Action: SQS:SendMessage
+      Queues:
+        - !Ref PDFProcessingQueue
+        - !Ref DetectPageTextQueue
+        - !Ref TesseractTextDetectQueue
+
+  PDFBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+        - AllowedHeaders:
+            - "*"
+          AllowedMethods:
+            - GET
+            - PUT
+            - POST
+            - HEAD
+          AllowedOrigins:
+            - "*"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt PDFProcessingQueue.Arn
+            Filter:
+              S3Key:
+                Rules:
+                - Name: suffix
+                  Value: '.pdf'
+
+  DeadLetter:
+    Type: AWS::SQS::Queue
+
+  # EXTRACT PAGE IMAGES
+
+  PageRenderedTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: pdf-processing-page-rendered
+
+  RenderPagesHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pdf-processing-render-pages
+      MemorySize: 1024
+      Timeout: 300
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.10
+      CodeUri: ./functions/render-pages
+      Layers:
+      - !ImportValue utils-poppler
+      - !ImportValue utils-pdf2image
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref PDFBucket
+          EXTRACT_PAGES_QUEUE_URL: !Ref PDFProcessingQueue
+          PAGE_RENDERED_TOPIC_ARN: !GetAtt PageRenderedTopic.TopicArn
+      Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PDFProcessingQueue.Arn
+            BatchSize: 1
+            Enabled: true
+
+  RenderPagesHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RenderPagesHandler}"
+      RetentionInDays: 7
+
+  # USE PYTESSERACT
+
+  TesseractTextDetectQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: pdf-processing-tesseract-text-detect-queue
+      DelaySeconds: 0
+      RedrivePolicy:
+        deadLetterTargetArn : !GetAtt DeadLetter.Arn
+        maxReceiveCount : 3
+
+  TesseractTextDetect:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 30
+      MemorySize: 512
+      Runtime: python3.10
+      Handler: lambda_function.lambda_handler
+      CodeUri: ./functions/pytesseract-text-detection
+      FunctionName: pdf-processing-tesseract-detection
+      Policies:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+      Layers:
+      - !ImportValue utils-tesseract
+      - !ImportValue utils-pytesseract
+      - !ImportValue utils-webp
+      Environment:
+        Variables:
+          INPUT_QUEUE: !Ref TesseractTextDetectQueue
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TesseractTextDetectQueue.Arn
+            BatchSize: 1
+            Enabled: true
+
+  TesseractTextDetectSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt TesseractTextDetectQueue.Arn
+      Protocol: sqs
+      TopicArn: !Ref PageRenderedTopic
+
+  TesseractTextDetectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${TesseractTextDetect}"
+      RetentionInDays: 7      
+
+  # USE TEXTRACT FOR EVERY PAGE RENDERED
+
+  DetectPageTextQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: pdf-processing-process-detect-page-text
+      DelaySeconds: 0
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn : !GetAtt DeadLetter.Arn
+        maxReceiveCount : 3
+
+  DetectPageTextSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt DetectPageTextQueue.Arn
+      Protocol: sqs
+      TopicArn: !Ref PageRenderedTopic
+
+  DetectPageText:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 30
+      MemorySize: 256
+      FunctionName: pdf-processing-detect-page-text
+      Description: Detects text in the page
+      Runtime: python3.10
+      Handler: lambda_function.lambda_handler
+      CodeUri: ./functions/detect-page-text
+      Layers: 
+      - !ImportValue utils-webp
+      - !ImportValue utils-pillow
+      - !ImportValue utils-textractor
+      - !ImportValue utils-pandas
+      Environment:
+        Variables:
+          INPUT_QUEUE: !Ref DetectPageTextQueue
+      Policies:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+      - arn:aws:iam::aws:policy/AmazonTextractFullAccess
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DetectPageTextQueue.Arn
+            BatchSize: 1
+            Enabled: true
+
+  DetectPageTextLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DetectPageText}"
+      RetentionInDays: 7
+  
