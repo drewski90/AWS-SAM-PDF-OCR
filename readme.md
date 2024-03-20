@@ -52,7 +52,7 @@ Once the stack is deployed, you can start using it to process PDF documents. PDF
 
 Object keys are expected to conform to the following format:
 
-f"{object_owner}\{unique_upload_id}\{filename}.pdf"
+f"{object_owner}\\{unique_upload_id}\\{filename}.pdf"
 
 ## Monitoring and Logs
 
