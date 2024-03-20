@@ -1,31 +1,43 @@
-# Title: Textract Job Starter Lambda
+# AWS Lambda Function for Text Extraction from Images
 
-# Description:
-This Lambda function initiates a Textract job for analyzing documents stored in an S3 bucket. It listens for messages in an SQS queue, extracts information about the documents, starts Textract jobs for each document, and deletes the processed messages from the queue.
+This AWS Lambda function is designed to extract text from images stored in an S3 bucket using Amazon Textract and save the extracted text back to the S3 bucket. The function is triggered by messages from an SQS queue containing information about the images to be processed.
 
-# Dependencies:
-- boto3
-- botocore
-- json
+## Functionality
 
-# Environment Variables:
-- START_TEXTRACT_JOB_QUEUE_URL: URL of the SQS queue where messages containing document information are received.
-- TEXTRACT_STATUS_TOPIC_ARN: ARN of the SNS topic for Textract job status notifications.
-- TEXTRACT_SNS_ROLE_ARN: ARN of the IAM role for Textract to publish notifications to SNS.
-- METADATA_BUCKET_NAME: Name of the S3 bucket where Textract output will be stored.
+- **read_image**: Retrieves image data from an S3 bucket and opens it using the Pillow library.
+- **image_to_textractor**: Converts the image to a format compatible with Amazon Textract and sends it for text analysis.
+- **extract_text_from_s3_image**: Combines the above functions to extract text from images stored in S3.
+- **save_image_text**: Saves the extracted text back to the S3 bucket.
+- **lambda_handler**: Main Lambda function handler that processes SQS messages, extracts text from images, and saves the results.
 
-# Functions:
-1. start_textract_job(message)
-   - Initiates a Textract job for analyzing a document stored in an S3 bucket.
-   - Parameters:
-     - message: Dictionary containing information about the document (bucket name, object key, version ID, and message ID).
-   - Returns: None
+## Dependencies
 
-2. lambda_handler(event, context)
-   - Main Lambda handler function.
-   - Processes messages from an SQS queue, extracts document information, starts Textract jobs, and deletes the processed messages from the queue.
-   - Parameters:
-     - event: Event data containing SQS messages.
-     - context: Lambda context object.
-   - Returns:
-     - Dictionary containing the HTTP status and response body.
+- **boto3**: AWS SDK for Python.
+- **Pillow**: Python Imaging Library for opening, manipulating, and saving many different image file formats.
+- **textract**: Python package for interacting with Amazon Textract.
+- **json**: Python library for JSON data manipulation.
+- **os**: Python library for interacting with the operating system.
+- **io**: Python library for handling I/O operations.
+
+## Environment Variables
+
+- **INPUT_QUEUE**: Name of the SQS queue where messages triggering the Lambda function are sent.
+
+## Usage
+
+1. Ensure that the necessary IAM permissions are granted to the Lambda function to access S3, SQS, and Textract.
+2. Set up an SQS queue to trigger the Lambda function.
+3. Configure the Lambda function with the required environment variables and trigger source (SQS queue).
+4. Deploy the Lambda function using the AWS Management Console or the AWS CLI.
+
+## Deployment
+
+Deploy the Lambda function using AWS CloudFormation or the AWS Management Console. Make sure to properly configure the function's trigger, environment variables, and permissions.
+
+## Error Handling
+
+The function logs errors and exceptions encountered during processing to CloudWatch Logs. Monitoring and alerting can be set up using AWS CloudWatch Alarms.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
